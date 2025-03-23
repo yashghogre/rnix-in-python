@@ -1,0 +1,12 @@
+[package]
+name = "rnix_python"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "rnix_python"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.24.0", features = ["extension-module"] }
+rnix = { path = "../rnix" }
