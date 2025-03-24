@@ -1,86 +1,68 @@
-/*
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
-use rnix::{Root, SyntaxNode};
-
-#[pyfunction]
-fn parse_nix(py: Python<'_>, input: &str) -> PyResult<Py<PyDict>> {
-    let ast = Root::parse(input);
-    let dict = PyDict::new(py);
-
-    // Example: Extract root node and error count
-    dict.set_item("root_kind", ast.tree().to_string())?;
-
-    Ok(dict.into())
-}
-
-#[pymodule]
-fn rnix_python(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Use the Bound<PyModule> API for PyO3 0.20
-    m.add_function(wrap_pyfunction!(parse_nix, m)?)?;
-    Ok(())
-}
-
-*/
-
-use pyo3::prelude::*;
-use pyo3::types::PyModule;
-use pyo3::{Bound, wrap_pyfunction};
+use pyo3::wrap_pyfunction;
 use rnix::Root;
+use rnix::ast::{self, AttrpathValue, HasEntry};
+use rowan::ast::AstNode; // Needed to use `cast()`
 use rowan::TextRange;
 
-/// Your replacement function: takes a Nix code string,
-/// a search substring, and a replacement substring.
-/// It returns a modified string with the replacements applied.
-fn replace_nix_value(code: &str, search: &str, replace: &str) -> String {
+/// Searches the parsed Nix AST for an attribute whose key matches `attr_name`
+/// and replaces its value with `new_value`.
+fn replace_attr_value(code: &str, attr_name: &str, new_value: &str) -> String {
     let root = Root::parse(code);
     let syntax = root.syntax();
 
-    // Collect all changes as (global_start, global_end, new_text)
+    // We'll collect changes as (global_start, global_end, replacement_text)
     let mut changes: Vec<(usize, usize, String)> = Vec::new();
 
-    // Iterate over each descendant node in the AST.
+    // Traverse the AST for attribute sets.
     for node in syntax.descendants() {
-        let node_range: TextRange = node.text_range();
-        let node_start = usize::from(node_range.start());
-        let node_text = node.text().to_string(); // text for this node
-
-        // Find all occurrences of `search` within this node.
-        let mut pos = 0;
-        while let Some(idx) = node_text[pos..].find(search) {
-            let found_index = pos + idx;
-            let global_start = node_start + found_index;
-            let global_end = global_start + search.len();
-            // Ensure we are at valid UTF-8 boundaries in the original string.
-            if code.is_char_boundary(global_start) && code.is_char_boundary(global_end) {
-                changes.push((global_start, global_end, replace.to_string()));
-            } else {
-                eprintln!("Skipping occurrence with invalid boundaries at {}..{}", global_start, global_end);
+        if let Some(attr_set) = ast::AttrSet::cast(node.clone()) {
+            // Iterate over attribute entries in the set.
+            for entry in attr_set.entries() {
+                // Convert the entry into an AttrpathValue.
+                if let Some(apv) = AttrpathValue::cast(entry.syntax().clone()) {
+                    // av.attrpath() returns an Option; unwrap it if present.
+                    if let Some(attrpath) = apv.attrpath() {
+                        let key_str = attrpath.to_string().trim().to_string();
+                        if key_str == attr_name {
+                            // av.value() returns an Option for the value expression.
+                            if let Some(expr) = apv.value() {
+                                // Get the byte range of the value using its syntax node.
+                                let range: TextRange = expr.syntax().text_range();
+                                let start = usize::from(range.start());
+                                let end = usize::from(range.end());
+                                changes.push((start, end, new_value.to_string()));
+                            }
+                        }
+                    }
+                }
             }
-            pos = found_index + search.len();
         }
     }
 
-    // Sort changes in reverse order (from end of the file to the beginning).
-    // This ensures that earlier replacements don't affect later ones.
+    // Sort changes in reverse order so that earlier byte offsets remain valid.
     changes.sort_by(|a, b| b.0.cmp(&a.0));
 
-    // Create a mutable copy of the original code and apply the changes.
+    // Apply each change to a mutable copy of the original code.
     let mut modified_code = code.to_string();
-    for (start, end, new_text) in changes {
-        modified_code.replace_range(start..end, &new_text);
+    for (start, end, replacement_text) in changes {
+        if modified_code.is_char_boundary(start) && modified_code.is_char_boundary(end) {
+            modified_code.replace_range(start..end, &replacement_text);
+        } else {
+            eprintln!("Skipping replacement for invalid boundaries: {}..{}", start, end);
+        }
     }
     modified_code
 }
 
-
 #[pyfunction]
-fn replace_value(input: &str, search: &str, replacement: &str) -> PyResult<String> {
-    Ok(replace_nix_value(input, search, replacement))
+fn replace_value(input: &str, attr_name: &str, new_value: &str) -> PyResult<String> {
+    Ok(replace_attr_value(input, attr_name, new_value))
 }
 
+/// Module initializer for the Python extension.
 #[pymodule]
-fn rnix_python(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn rnix_python(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(replace_value, m)?)?;
     Ok(())
 }

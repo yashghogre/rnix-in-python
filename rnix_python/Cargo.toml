@@ -8,6 +8,6 @@ name = "rnix_python"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.24.0", features = ["extension-module"] }
+pyo3 = { version = "0.20", features = ["extension-module"] }
 rnix = { path = "../rnix" }
-rowan = "0.16.1"
+rowan = "=0.15.16"
